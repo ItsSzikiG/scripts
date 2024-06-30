@@ -1,0 +1,89 @@
+#!/bin/bash
+
+movie_id="$radarr_movie_id"
+filmek_path="/media/contents/filmek"
+movies_path="/media/contents/movies"
+movie_directory=$(dirname "$radarr_moviefile_path")
+movie_folder=$(basename "$movie_directory")
+LOGFILE="/config/logs/scripts.txt"
+API_KEY="5eb2d594ff4a41de9c1d2d0182c07091"
+
+# Function to get current timestamp in desired format
+get_timestamp() {
+    date "+%Y-%m-%d %T.%1N"
+}
+
+# Log the event with timestamp
+echo "$(get_timestamp) Radarr Event: $radarr_eventtype file: $radarr_moviefile_path" >> "$LOGFILE"
+
+# Check if movie_id is empty
+if [[ -z "$movie_id" ]]; then
+    echo "$(get_timestamp) movie_id is empty. Exiting." >> "$LOGFILE"
+    exit 1
+else
+    # Determine new path based on conditions
+    if [[ "$radarr_isupgrade" == "True" ]]; then
+        if [[ "$radarr_moviefile_path" == *"[HU+"* || "$radarr_moviefile_path" == *"[HU]"* ]]; then
+            if [[ "$radarr_moviefile_path" != *"/filmek"* ]]; then
+                echo "$(get_timestamp) Assigning new path to a variable: $movie_folder to $new_path" >> "$LOGFILE"
+                new_path="$filmek_path/$movie_folder"
+            else
+                echo "$(get_timestamp) Language unchanged: no need to move folder" >> "$LOGFILE"
+            fi
+        fi
+    else
+        if [[ "$radarr_moviefile_path" == *"[HU+"* || "$radarr_moviefile_path" == *"[HU]"* ]]; then
+            echo "$(get_timestamp) Assigning new path to a variable: $movie_folder to $new_path" >> "$LOGFILE"
+            new_path="$filmek_path/$movie_folder"
+        else
+            echo "$(get_timestamp) Assigning new path to a variable: $movie_folder to $new_path" >> "$LOGFILE"
+            new_path="$movies_path/$movie_folder"
+        fi
+    fi
+
+    echo "$(get_timestamp) Fetching data for movie with id: $movie_id" >> "$LOGFILE"
+    # Fetch the current movie data
+    CURRENT_DATA=$(curl -s -X GET \
+        -H "accept: application/json" \
+        -H "X-Api-Key: $API_KEY" \
+        "http://localhost:7878/api/v3/movie/$movie_id" | jq .)
+
+    if [ $? -ne 0 ]; then
+        echo "Error: curl command failed"
+        exit 1
+    fi
+
+    # Check if the API returned valid data
+    if [[ -z "$CURRENT_DATA" ]]; then
+        echo "$(get_timestamp) Failed to fetch movie data for movie_id: $movie_id" >> "$LOGFILE"
+        exit 1
+    fi
+
+    echo "$(get_timestamp) Current data: $CURRET_DATA" >> "$LOGFILE"
+
+    # Update paths in the current data
+    UPDATED_DATA=$(echo "$CURRENT_DATA" | jq --arg newPath "$new_path" '
+        .path = $newPath |
+        .folderName = $newPath |
+        .rootFolderPath = ($newPath | gsub("/[^/]+$"; "")) |
+        if .movieFile then .movieFile.path = ($newPath + "/" + (.movieFile.relativePath | split("/")[-1])) else . end
+    ')
+
+    if [[ -z "$UPDATED_DATA" ]]; then
+        echo "$(get_timestamp) No updated data to send for movie_id: $movie_id" >> "$LOGFILE"
+        exit 1
+    fi
+
+    echo "$(get_timestamp) Updated data: $UPDATED_DATA" >> "$LOGFILE"
+
+    # Send the updated data back to Radarr
+    curl -X PUT \
+        -H "accept: application/json" \
+        -H "Content-Type: application/json" \
+        -H "X-Api-Key: $API_KEY" \
+        -d "$UPDATED_DATA" \
+        "http://localhost:7878/api/v3/movie/$movie_id"
+
+    echo "$(get_timestamp) Assigning new path to a variable: $movie_folder to $new_path" >> "$LOGFILE"
+    mv "$radarr_movie_path" "$new_path"
+fi
